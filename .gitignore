@@ -2,6 +2,7 @@ node_modules/
 .npm-cache/
 .tools/
 dist/
+native-dist/
 coverage/
 .DS_Store
 *.log
