@@ -2,12 +2,12 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Text;
-using System.Text.RegularExpressions;
 using System.Windows.Forms;
 
 namespace DnsSwitcherPro
@@ -30,13 +30,6 @@ namespace DnsSwitcherPro
         public string Primary;
         public string Secondary;
         public bool Custom;
-
-        public override string ToString()
-        {
-            return string.IsNullOrWhiteSpace(Secondary)
-                ? string.Format("{0}  ({1})", Name, Primary)
-                : string.Format("{0}  ({1} / {2})", Name, Primary, Secondary);
-        }
     }
 
     internal sealed class AdapterInfo
@@ -45,16 +38,20 @@ namespace DnsSwitcherPro
         public string Description;
         public string Address;
         public List<string> Dns = new List<string>();
-
-        public override string ToString()
-        {
-            var dns = Dns.Count == 0 ? "DNS: -" : "DNS: " + string.Join(", ", Dns.ToArray());
-            return string.Format("{0}\r\n{1} · {2}\r\n{3}", Description, Name, Address, dns);
-        }
     }
 
     internal sealed class MainForm : Form
     {
+        private static readonly Color Page = Color.FromArgb(246, 248, 250);
+        private static readonly Color Panel = Color.White;
+        private static readonly Color Ink = Color.FromArgb(25, 31, 40);
+        private static readonly Color Muted = Color.FromArgb(101, 116, 139);
+        private static readonly Color Line = Color.FromArgb(222, 226, 232);
+        private static readonly Color Accent = Color.FromArgb(29, 78, 216);
+        private static readonly Color AccentSoft = Color.FromArgb(233, 240, 255);
+        private static readonly Color SuccessSoft = Color.FromArgb(232, 246, 238);
+        private static readonly Color WarningSoft = Color.FromArgb(255, 247, 226);
+
         private readonly ListBox adaptersList = new ListBox();
         private readonly ListBox presetsList = new ListBox();
         private readonly TextBox nameBox = new TextBox();
@@ -72,6 +69,12 @@ namespace DnsSwitcherPro
         private readonly Button languageButton = new Button();
         private readonly Label statusLabel = new Label();
         private readonly Label targetLabel = new Label();
+        private readonly Label adaptersTitle = new Label();
+        private readonly Label presetsTitle = new Label();
+        private readonly Label customTitle = new Label();
+        private readonly Label nameLabel = new Label();
+        private readonly Label primaryLabel = new Label();
+        private readonly Label secondaryLabel = new Label();
 
         private readonly List<AdapterInfo> adapters = new List<AdapterInfo>();
         private readonly List<DnsPreset> presets = new List<DnsPreset>();
@@ -80,18 +83,24 @@ namespace DnsSwitcherPro
             "DNS Switcher Pro");
         private bool chinese;
 
+        private string PresetsFile { get { return Path.Combine(dataDir, "presets.txt"); } }
+        private string AdapterOrderFile { get { return Path.Combine(dataDir, "adapter-order.txt"); } }
+        private string LanguageFile { get { return Path.Combine(dataDir, "zh.flag"); } }
+
         public MainForm()
         {
             Text = "DNS Switcher Pro";
-            Width = 980;
-            Height = 680;
-            MinimumSize = new Size(860, 580);
+            Width = 900;
+            Height = 620;
+            MinimumSize = new Size(820, 540);
             StartPosition = FormStartPosition.CenterScreen;
             Font = new Font("Segoe UI", 9F);
+            BackColor = Page;
             Icon = LoadAppIcon();
 
             Directory.CreateDirectory(dataDir);
-            chinese = File.Exists(Path.Combine(dataDir, "zh.flag"));
+            chinese = File.Exists(LanguageFile);
+
             BuildUi();
             LoadPresets();
             RefreshAdapters();
@@ -107,75 +116,126 @@ namespace DnsSwitcherPro
 
         private void BuildUi()
         {
-            var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2, Padding = new Padding(16) };
+            var root = new TableLayoutPanel();
+            root.Dock = DockStyle.Fill;
+            root.ColumnCount = 2;
+            root.RowCount = 2;
+            root.Padding = new Padding(18);
+            root.BackColor = Page;
             root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 38));
             root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 62));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             Controls.Add(root);
 
-            var header = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false };
-            var title = new Label { Text = "DNS Switcher Pro", AutoSize = true, Font = new Font(Font.FontFamily, 16, FontStyle.Bold), Margin = new Padding(0, 8, 20, 0) };
-            statusLabel.AutoSize = true;
-            statusLabel.Margin = new Padding(0, 13, 12, 0);
-            languageButton.Width = 82;
-            languageButton.Height = 30;
-            languageButton.Margin = new Padding(0, 8, 0, 0);
-            languageButton.Click += delegate { ToggleLanguage(); };
-            header.Controls.Add(title);
-            header.Controls.Add(statusLabel);
-            header.Controls.Add(languageButton);
+            var header = new FlowLayoutPanel();
+            header.Dock = DockStyle.Fill;
+            header.FlowDirection = FlowDirection.LeftToRight;
+            header.WrapContents = false;
+            header.BackColor = Page;
             root.SetColumnSpan(header, 2);
             root.Controls.Add(header, 0, 0);
 
-            var left = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3, ColumnCount = 1 };
-            left.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
-            left.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            left.RowStyles.Add(new RowStyle(SizeType.Absolute, 86));
+            var logo = new Panel();
+            logo.Width = 38;
+            logo.Height = 38;
+            logo.Margin = new Padding(0, 8, 10, 0);
+            logo.Paint += PaintLogo;
+            header.Controls.Add(logo);
+
+            var titleBlock = new TableLayoutPanel();
+            titleBlock.Width = 300;
+            titleBlock.Height = 48;
+            titleBlock.RowCount = 2;
+            titleBlock.ColumnCount = 1;
+            titleBlock.Margin = new Padding(0, 5, 14, 0);
+            titleBlock.BackColor = Page;
+            titleBlock.RowStyles.Add(new RowStyle(SizeType.Absolute, 27));
+            titleBlock.RowStyles.Add(new RowStyle(SizeType.Absolute, 19));
+            var title = new Label();
+            title.Text = "DNS Switcher Pro";
+            title.Font = new Font(Font.FontFamily, 16, FontStyle.Bold);
+            title.ForeColor = Ink;
+            title.Dock = DockStyle.Fill;
+            var subtitle = new Label();
+            subtitle.Text = "Native Windows DNS utility";
+            subtitle.ForeColor = Muted;
+            subtitle.Dock = DockStyle.Fill;
+            titleBlock.Controls.Add(title, 0, 0);
+            titleBlock.Controls.Add(subtitle, 0, 1);
+            header.Controls.Add(titleBlock);
+
+            StylePill(statusLabel);
+            statusLabel.Margin = new Padding(0, 13, 8, 0);
+            header.Controls.Add(statusLabel);
+
+            StyleButton(languageButton, false);
+            languageButton.Width = 78;
+            languageButton.Height = 31;
+            languageButton.Margin = new Padding(0, 9, 0, 0);
+            languageButton.Click += delegate { ToggleLanguage(); };
+            header.Controls.Add(languageButton);
+
+            var left = CreateCardLayout();
             root.Controls.Add(left, 0, 1);
 
+            adaptersTitle.Dock = DockStyle.Fill;
+            adaptersTitle.Font = new Font(Font.FontFamily, 10, FontStyle.Bold);
+            adaptersTitle.ForeColor = Ink;
+            left.Controls.Add(adaptersTitle, 0, 0);
+
             targetLabel.Dock = DockStyle.Fill;
-            targetLabel.Font = new Font(Font.FontFamily, 9, FontStyle.Bold);
-            left.Controls.Add(targetLabel, 0, 0);
+            targetLabel.ForeColor = Muted;
+            left.Controls.Add(targetLabel, 0, 1);
 
-            adaptersList.Dock = DockStyle.Fill;
-            adaptersList.DrawMode = DrawMode.OwnerDrawVariable;
-            adaptersList.MeasureItem += MeasureListItem;
-            adaptersList.DrawItem += DrawListItem;
+            ConfigureList(adaptersList);
             adaptersList.SelectedIndexChanged += delegate { UpdateTargetLabel(); };
-            left.Controls.Add(adaptersList, 0, 1);
+            left.Controls.Add(adaptersList, 0, 2);
 
-            var adapterButtons = new FlowLayoutPanel { Dock = DockStyle.Fill };
+            var adapterButtons = CreateButtonRow();
+            StyleButton(refreshButton, false);
+            StyleButton(upAdapterButton, false);
+            StyleButton(downAdapterButton, false);
             refreshButton.Width = 92;
-            upAdapterButton.Width = 54;
-            downAdapterButton.Width = 54;
+            upAdapterButton.Width = 42;
+            downAdapterButton.Width = 42;
             refreshButton.Click += delegate { RefreshAdapters(); };
             upAdapterButton.Click += delegate { MoveAdapter(-1); };
             downAdapterButton.Click += delegate { MoveAdapter(1); };
             adapterButtons.Controls.Add(refreshButton);
             adapterButtons.Controls.Add(upAdapterButton);
             adapterButtons.Controls.Add(downAdapterButton);
-            left.Controls.Add(adapterButtons, 0, 2);
+            left.Controls.Add(adapterButtons, 0, 3);
 
-            var right = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 4, ColumnCount = 1, Padding = new Padding(14, 0, 0, 0) };
-            right.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            right.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
-            right.RowStyles.Add(new RowStyle(SizeType.Absolute, 110));
-            right.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
+            var right = CreateCardLayout();
+            right.Padding = new Padding(16, 14, 16, 16);
             root.Controls.Add(right, 1, 1);
 
-            presetsList.Dock = DockStyle.Fill;
-            presetsList.DrawMode = DrawMode.OwnerDrawVariable;
-            presetsList.MeasureItem += MeasureListItem;
-            presetsList.DrawItem += DrawListItem;
-            right.Controls.Add(presetsList, 0, 0);
+            presetsTitle.Dock = DockStyle.Fill;
+            presetsTitle.Font = new Font(Font.FontFamily, 10, FontStyle.Bold);
+            presetsTitle.ForeColor = Ink;
+            right.Controls.Add(presetsTitle, 0, 0);
 
-            var presetButtons = new FlowLayoutPanel { Dock = DockStyle.Fill };
-            upPresetButton.Width = 54;
-            downPresetButton.Width = 54;
-            deleteButton.Width = 80;
-            commandsButton.Width = 112;
-            applyButton.Width = 112;
+            var hint = new Label();
+            hint.Text = "";
+            hint.Dock = DockStyle.Fill;
+            hint.ForeColor = Muted;
+            right.Controls.Add(hint, 0, 1);
+
+            ConfigureList(presetsList);
+            right.Controls.Add(presetsList, 0, 2);
+
+            var presetButtons = CreateButtonRow();
+            StyleButton(upPresetButton, false);
+            StyleButton(downPresetButton, false);
+            StyleButton(deleteButton, false);
+            StyleButton(commandsButton, false);
+            StyleButton(applyButton, true);
+            upPresetButton.Width = 42;
+            downPresetButton.Width = 42;
+            deleteButton.Width = 76;
+            commandsButton.Width = 100;
+            applyButton.Width = 104;
             upPresetButton.Click += delegate { MovePreset(-1); };
             downPresetButton.Click += delegate { MovePreset(1); };
             deleteButton.Click += delegate { DeletePreset(); };
@@ -186,41 +246,153 @@ namespace DnsSwitcherPro
             presetButtons.Controls.Add(deleteButton);
             presetButtons.Controls.Add(commandsButton);
             presetButtons.Controls.Add(applyButton);
-            right.Controls.Add(presetButtons, 0, 1);
+            right.Controls.Add(presetButtons, 0, 3);
 
-            var customGrid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 2 };
+            customTitle.Dock = DockStyle.Fill;
+            customTitle.Font = new Font(Font.FontFamily, 10, FontStyle.Bold);
+            customTitle.ForeColor = Ink;
+            right.Controls.Add(customTitle, 0, 4);
+
+            var customGrid = new TableLayoutPanel();
+            customGrid.Dock = DockStyle.Fill;
+            customGrid.ColumnCount = 3;
+            customGrid.RowCount = 2;
             customGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 34));
             customGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33));
             customGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33));
-            customGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
+            customGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
             customGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
-            customGrid.Controls.Add(new Label { Text = "Name", Dock = DockStyle.Fill }, 0, 0);
-            customGrid.Controls.Add(new Label { Text = "Primary", Dock = DockStyle.Fill }, 1, 0);
-            customGrid.Controls.Add(new Label { Text = "Secondary", Dock = DockStyle.Fill }, 2, 0);
+            customGrid.BackColor = Panel;
+            customGrid.Controls.Add(nameLabel, 0, 0);
+            customGrid.Controls.Add(primaryLabel, 1, 0);
+            customGrid.Controls.Add(secondaryLabel, 2, 0);
             customGrid.Controls.Add(nameBox, 0, 1);
             customGrid.Controls.Add(primaryBox, 1, 1);
             customGrid.Controls.Add(secondaryBox, 2, 1);
-            right.Controls.Add(customGrid, 0, 2);
+            StyleInput(nameBox);
+            StyleInput(primaryBox);
+            StyleInput(secondaryBox);
+            StyleSmallLabel(nameLabel);
+            StyleSmallLabel(primaryLabel);
+            StyleSmallLabel(secondaryLabel);
+            right.Controls.Add(customGrid, 0, 5);
 
-            addButton.Dock = DockStyle.Left;
-            addButton.Width = 140;
+            var addRow = CreateButtonRow();
+            StyleButton(addButton, false);
+            addButton.Width = 128;
             addButton.Click += delegate { AddPreset(); };
-            right.Controls.Add(addButton, 0, 3);
+            addRow.Controls.Add(addButton);
+            right.Controls.Add(addRow, 0, 6);
+        }
+
+        private TableLayoutPanel CreateCardLayout()
+        {
+            var panel = new TableLayoutPanel();
+            panel.Dock = DockStyle.Fill;
+            panel.RowCount = 7;
+            panel.ColumnCount = 1;
+            panel.Padding = new Padding(16, 14, 16, 16);
+            panel.Margin = new Padding(0, 0, 12, 0);
+            panel.BackColor = Panel;
+            panel.CellBorderStyle = TableLayoutPanelCellBorderStyle.None;
+            panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 25));
+            panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
+            panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
+            panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+            panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
+            panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
+            return panel;
+        }
+
+        private FlowLayoutPanel CreateButtonRow()
+        {
+            var row = new FlowLayoutPanel();
+            row.Dock = DockStyle.Fill;
+            row.FlowDirection = FlowDirection.LeftToRight;
+            row.WrapContents = false;
+            row.BackColor = Panel;
+            return row;
+        }
+
+        private void ConfigureList(ListBox list)
+        {
+            list.Dock = DockStyle.Fill;
+            list.BorderStyle = BorderStyle.None;
+            list.BackColor = Panel;
+            list.DrawMode = DrawMode.OwnerDrawVariable;
+            list.MeasureItem += MeasureListItem;
+            list.DrawItem += DrawListItem;
+        }
+
+        private void StyleButton(Button button, bool primary)
+        {
+            button.Height = 31;
+            button.Margin = new Padding(0, 6, 8, 0);
+            button.FlatStyle = FlatStyle.Flat;
+            button.FlatAppearance.BorderSize = 1;
+            button.FlatAppearance.BorderColor = primary ? Accent : Line;
+            button.BackColor = primary ? Accent : Color.White;
+            button.ForeColor = primary ? Color.White : Ink;
+            button.Font = new Font(Font.FontFamily, 9, primary ? FontStyle.Bold : FontStyle.Regular);
+        }
+
+        private void StyleInput(TextBox textBox)
+        {
+            textBox.BorderStyle = BorderStyle.FixedSingle;
+            textBox.Margin = new Padding(0, 0, 8, 0);
+        }
+
+        private void StyleSmallLabel(Label label)
+        {
+            label.Dock = DockStyle.Fill;
+            label.ForeColor = Muted;
+            label.Font = new Font(Font.FontFamily, 8, FontStyle.Bold);
+        }
+
+        private void StylePill(Label label)
+        {
+            label.AutoSize = false;
+            label.Width = 112;
+            label.Height = 27;
+            label.TextAlign = ContentAlignment.MiddleCenter;
+            label.BackColor = IsAdmin() ? SuccessSoft : WarningSoft;
+            label.ForeColor = Ink;
+            label.Font = new Font(Font.FontFamily, 8, FontStyle.Bold);
+        }
+
+        private void PaintLogo(object sender, PaintEventArgs e)
+        {
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using (var brush = new SolidBrush(Ink))
+            using (var pen = new Pen(Color.White, 2.2f))
+            {
+                e.Graphics.FillRectangle(brush, 0, 0, 38, 38);
+                e.Graphics.DrawEllipse(pen, 10, 9, 18, 18);
+                e.Graphics.DrawLine(pen, 11, 18, 27, 18);
+                e.Graphics.DrawArc(pen, 13, 10, 12, 17, 85, 190);
+                e.Graphics.DrawArc(pen, 13, 10, 12, 17, 265, 190);
+            }
         }
 
         private void ApplyLanguage()
         {
-            statusLabel.Text = IsAdmin()
-                ? T("Admin mode", "管理员模式")
-                : T("Limited mode", "受限模式");
+            statusLabel.Text = IsAdmin() ? T("Admin", "管理员") : T("Limited", "受限");
+            statusLabel.BackColor = IsAdmin() ? SuccessSoft : WarningSoft;
             languageButton.Text = chinese ? "English" : "中文";
+            adaptersTitle.Text = T("Network adapters", "网卡列表");
+            presetsTitle.Text = T("DNS presets", "DNS 预设");
+            customTitle.Text = T("Custom DNS", "自定义 DNS");
+            nameLabel.Text = T("Name", "名称");
+            primaryLabel.Text = T("Primary", "主 DNS");
+            secondaryLabel.Text = T("Secondary", "备用 DNS");
             refreshButton.Text = T("Refresh", "刷新");
             upAdapterButton.Text = "↑";
             downAdapterButton.Text = "↓";
             upPresetButton.Text = "↑";
             downPresetButton.Text = "↓";
             deleteButton.Text = T("Delete", "删除");
-            commandsButton.Text = T("Commands", "命令");
+            commandsButton.Text = T("Command", "命令");
             applyButton.Text = T("Apply", "应用");
             addButton.Text = T("Save preset", "保存预设");
             UpdateTargetLabel();
@@ -236,19 +408,17 @@ namespace DnsSwitcherPro
         private void ToggleLanguage()
         {
             chinese = !chinese;
-            var flag = Path.Combine(dataDir, "zh.flag");
-            if (chinese) File.WriteAllText(flag, "1");
-            else if (File.Exists(flag)) File.Delete(flag);
+            if (chinese) File.WriteAllText(LanguageFile, "1");
+            else if (File.Exists(LanguageFile)) File.Delete(LanguageFile);
             ApplyLanguage();
         }
 
         private void LoadPresets()
         {
             presets.Clear();
-            var file = Path.Combine(dataDir, "presets.txt");
-            if (File.Exists(file))
+            if (File.Exists(PresetsFile))
             {
-                foreach (var line in File.ReadAllLines(file))
+                foreach (var line in File.ReadAllLines(PresetsFile))
                 {
                     var parts = line.Split('\t');
                     if (parts.Length >= 5)
@@ -274,7 +444,7 @@ namespace DnsSwitcherPro
         private void SavePresets()
         {
             var lines = presets.Select(p => string.Join("\t", new[] { p.Id, p.Name, p.Primary, p.Secondary ?? "", p.Custom ? "1" : "0" }));
-            File.WriteAllLines(Path.Combine(dataDir, "presets.txt"), lines.ToArray(), Encoding.UTF8);
+            File.WriteAllLines(PresetsFile, lines.ToArray(), Encoding.UTF8);
         }
 
         private void BindPresets()
@@ -287,6 +457,8 @@ namespace DnsSwitcherPro
 
         private void RefreshAdapters()
         {
+            var selectedAdapter = adaptersList.SelectedItem as AdapterInfo;
+            var selectedName = selectedAdapter == null ? null : selectedAdapter.Name;
             adapters.Clear();
             foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
             {
@@ -310,23 +482,50 @@ namespace DnsSwitcherPro
                 });
             }
 
+            ApplyAdapterOrder();
             adaptersList.Items.Clear();
             foreach (var adapter in adapters) adaptersList.Items.Add(adapter);
-            if (adaptersList.Items.Count > 0) adaptersList.SelectedIndex = 0;
+
+            if (adaptersList.Items.Count > 0)
+            {
+                var index = adapters.FindIndex(a => a.Name == selectedName);
+                adaptersList.SelectedIndex = index >= 0 ? index : 0;
+            }
             UpdateTargetLabel();
+        }
+
+        private void ApplyAdapterOrder()
+        {
+            if (!File.Exists(AdapterOrderFile)) return;
+            var order = File.ReadAllLines(AdapterOrderFile).ToList();
+            adapters.Sort(delegate (AdapterInfo a, AdapterInfo b)
+            {
+                var ia = order.IndexOf(a.Name);
+                var ib = order.IndexOf(b.Name);
+                if (ia < 0 && ib < 0) return 0;
+                if (ia < 0) return 1;
+                if (ib < 0) return -1;
+                return ia.CompareTo(ib);
+            });
+        }
+
+        private void SaveAdapterOrder()
+        {
+            File.WriteAllLines(AdapterOrderFile, adapters.Select(a => a.Name).ToArray(), Encoding.UTF8);
         }
 
         private void UpdateTargetLabel()
         {
             var adapter = adaptersList.SelectedItem as AdapterInfo;
             targetLabel.Text = adapter == null
-                ? T("Network adapters", "网卡列表")
+                ? T("No adapter selected", "未选择网卡")
                 : string.Format("{0}: {1}", T("Target", "目标"), adapter.Description);
         }
 
         private void MoveAdapter(int direction)
         {
             MoveListItem(adaptersList, adapters, direction);
+            SaveAdapterOrder();
         }
 
         private void MovePreset(int direction)
@@ -399,7 +598,7 @@ namespace DnsSwitcherPro
             var adapter = adaptersList.SelectedItem as AdapterInfo;
             var preset = presetsList.SelectedItem as DnsPreset;
             if (adapter == null || preset == null) return;
-            MessageBox.Show(BuildPowerShellCommand(adapter.Name, preset), T("Commands", "命令"));
+            MessageBox.Show(BuildPowerShellCommand(adapter.Name, preset), T("Command", "命令"));
         }
 
         private static void SetDns(string adapterName, DnsPreset preset)
@@ -461,18 +660,90 @@ namespace DnsSwitcherPro
 
         private static void MeasureListItem(object sender, MeasureItemEventArgs e)
         {
-            e.ItemHeight = 58;
+            e.ItemHeight = 72;
         }
 
         private void DrawListItem(object sender, DrawItemEventArgs e)
         {
-            e.DrawBackground();
             if (e.Index < 0) return;
             var box = (ListBox)sender;
-            var text = box.Items[e.Index].ToString();
-            var color = (e.State & DrawItemState.Selected) == DrawItemState.Selected ? SystemColors.HighlightText : ForeColor;
-            TextRenderer.DrawText(e.Graphics, text, Font, e.Bounds, color, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.WordBreak);
-            e.DrawFocusRectangle();
+            var selected = (e.State & DrawItemState.Selected) == DrawItemState.Selected;
+            var bounds = new Rectangle(e.Bounds.X + 3, e.Bounds.Y + 4, e.Bounds.Width - 8, e.Bounds.Height - 8);
+
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using (var back = new SolidBrush(selected ? AccentSoft : Color.FromArgb(250, 251, 253)))
+            using (var border = new Pen(selected ? Accent : Line))
+            {
+                FillRoundRect(e.Graphics, back, bounds, 8);
+                DrawRoundRect(e.Graphics, border, bounds, 8);
+            }
+
+            var adapter = box.Items[e.Index] as AdapterInfo;
+            if (adapter != null)
+            {
+                DrawAdapterItem(e.Graphics, bounds, adapter);
+            }
+
+            var preset = box.Items[e.Index] as DnsPreset;
+            if (preset != null)
+            {
+                DrawPresetItem(e.Graphics, bounds, preset);
+            }
+        }
+
+        private void DrawAdapterItem(Graphics g, Rectangle bounds, AdapterInfo adapter)
+        {
+            var title = TrimText(g, adapter.Description, new Font(Font.FontFamily, 9, FontStyle.Bold), bounds.Width - 24);
+            var dns = adapter.Dns.Count == 0 ? "DNS: -" : "DNS: " + string.Join(", ", adapter.Dns.ToArray());
+            TextRenderer.DrawText(g, title, new Font(Font.FontFamily, 9, FontStyle.Bold), new Point(bounds.X + 12, bounds.Y + 9), Ink);
+            TextRenderer.DrawText(g, adapter.Name + " · " + adapter.Address, Font, new Point(bounds.X + 12, bounds.Y + 30), Muted);
+            TextRenderer.DrawText(g, dns, Font, new Point(bounds.X + 12, bounds.Y + 49), Accent);
+        }
+
+        private void DrawPresetItem(Graphics g, Rectangle bounds, DnsPreset preset)
+        {
+            var title = TrimText(g, preset.Name, new Font(Font.FontFamily, 9, FontStyle.Bold), bounds.Width - 24);
+            var dns = string.IsNullOrWhiteSpace(preset.Secondary) ? preset.Primary : preset.Primary + " / " + preset.Secondary;
+            TextRenderer.DrawText(g, title, new Font(Font.FontFamily, 9, FontStyle.Bold), new Point(bounds.X + 12, bounds.Y + 13), Ink);
+            TextRenderer.DrawText(g, dns, Font, new Point(bounds.X + 12, bounds.Y + 37), Muted);
+        }
+
+        private static string TrimText(Graphics g, string text, Font font, int maxWidth)
+        {
+            if (TextRenderer.MeasureText(g, text, font).Width <= maxWidth) return text;
+            while (text.Length > 4 && TextRenderer.MeasureText(g, text + "...", font).Width > maxWidth)
+            {
+                text = text.Substring(0, text.Length - 1);
+            }
+            return text + "...";
+        }
+
+        private static void FillRoundRect(Graphics g, Brush brush, Rectangle rect, int radius)
+        {
+            using (var path = RoundRect(rect, radius))
+            {
+                g.FillPath(brush, path);
+            }
+        }
+
+        private static void DrawRoundRect(Graphics g, Pen pen, Rectangle rect, int radius)
+        {
+            using (var path = RoundRect(rect, radius))
+            {
+                g.DrawPath(pen, path);
+            }
+        }
+
+        private static GraphicsPath RoundRect(Rectangle rect, int radius)
+        {
+            var path = new GraphicsPath();
+            var d = radius * 2;
+            path.AddArc(rect.X, rect.Y, d, d, 180, 90);
+            path.AddArc(rect.Right - d, rect.Y, d, d, 270, 90);
+            path.AddArc(rect.Right - d, rect.Bottom - d, d, d, 0, 90);
+            path.AddArc(rect.X, rect.Bottom - d, d, d, 90, 90);
+            path.CloseFigure();
+            return path;
         }
     }
 }
